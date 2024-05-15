@@ -1,4 +1,4 @@
-CROSS_COMPILE ?= /home/owen/MaixCDK/dl/extracted/toolchains/maixcam/host-tools/gcc/riscv64-linux-musl-x86_64/bin/riscv64-unknown-linux-musl-
+CROSS_COMPILE ?= /home/sipeed/toolchain/host-tools/gcc/riscv64-linux-musl-x86_64/bin/riscv64-unknown-linux-musl-
 CC := $(CROSS_COMPILE)gcc
 LD := $(CROSS_COMPILE)ld
 # CC = gcc 
@@ -8,15 +8,17 @@ CFLAGS = -Wall -O -g
 SRCS = $(wildcard *.c)
 OBJS = $(patsubst %c, %o, $(SRCS))
 
-ROOT = ../../include/sdk
-AVCODEC = ../../include/avcodec
-SERVER = ../../include/media-server
+ROOT = ../../
+
+SDK = ${ROOT}/include/sdk
+AVCODEC = ${ROOT}/include/avcodec
+SERVER = ${ROOT}/include/media-server
 
 INCLUDES = 	-I. \
-			-I$(ROOT)/include \
-			-I$(ROOT)/libaio/include \
-			-I$(ROOT)/libhttp/include \
-			-I$(ROOT)/libice/include \
+			-I$(SDK)/include \
+			-I$(SDK)/libaio/include \
+			-I$(SDK)/libhttp/include \
+			-I$(SDK)/libice/include \
 			-I$(AVCODEC)/avbsf/include \
 			-I$(AVCODEC)/avcodec/include \
 			-I${SERVER}/libdash/include \
@@ -33,7 +35,7 @@ INCLUDES = 	-I. \
 CFLAGS += ${INCLUDES}
 
 LIBS = -lhttp -lice -lsdk  -lavbsf -lavcodec -lh264 -lh265 -lhls -lmkv -lmov -lmpeg -lrtmp -lflv -lrtp -lrtsp -lsip
-CFLAGS += ${LIBS} -L../../lib
+CFLAGS += ${LIBS} -L${ROOT}/lib
 
 TARGET = test
 
