@@ -84,7 +84,7 @@ static int rtmp_client_send(void* param, const void* header, size_t len, const v
 static void rtmp_client_push(const char* flv, rtmp_client_t* rtmp)
 {
 	int r, type;
-	int avcrecord = 0;
+	// int avcrecord = 0;
     int aacconfig = 0;
 	size_t taglen;
 	uint32_t timestamp;
@@ -164,7 +164,7 @@ static void rtmp_client_push(const char* flv, rtmp_client_t* rtmp)
 		diff = s_timestamp + 30;
 	}
 
-EXIT:
+// EXIT:
 	return;
 }
 

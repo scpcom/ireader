@@ -32,8 +32,8 @@ INCLUDES = 	-I. \
 			-I${SERVER}/libsip/include
 CFLAGS += ${INCLUDES}
 
-LIBS = -lhttp -lice -lsdk  -lavbsf -lavcodec -lh264 -lh265 -lhls -lmkv -lmov -lmpeg -lrtmp -lflv -lrtp -lrtsp -lsip
-LDFLAGS = ${LIBS} -L${ROOT}/lib
+LIBS = -lhttp -lice -lsdk  -lavbsf -lavcodec -lh264 -lh265 -lhls -lmkv -lmov -lmpeg -lrtmp -lflv -lrtp -lrtsp -lsip -laio
+LDFLAGS = ${LIBS} -L${ROOT}/lib -lstdc++
 
 TARGET = test
 
