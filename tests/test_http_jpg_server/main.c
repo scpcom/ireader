@@ -13,6 +13,52 @@
 
 #define BOUNDARY "frame"
 
+static const char *default_index_str =
+"<html>\n"
+"<body>\n"
+"<h1>JPG Stream</h1>\n"
+"<img src='/stream'>\n"
+"</body>\n"
+"</html>";
+
+typedef struct {
+	int socket;
+	int thread;
+	uint8_t is_inited;
+	uint8_t is_running;
+	uint8_t try_update_buffer;
+	uint8_t try_exit;
+	pthread_mutex_t lock;
+} client_info_t;
+
+typedef struct {
+	void *p;
+	size_t size;
+	uint8_t valid;
+} buffer_info_t;
+
+typedef struct {
+	int socket_fd;
+	struct sockaddr_in address;
+	int addrlen;
+
+	pthread_mutex_t lock;
+	int thread;
+	uint8_t thread_is_started;
+	uint8_t try_exit_thread;
+
+	int client_cnt;
+	int client_max;
+	client_info_t *client;
+
+	buffer_info_t buffer[2];
+	int new_buffer_idx;
+
+	char *index_str;
+} priv_t;
+
+priv_t priv;
+
 static int socket_is_connected(int sockfd) {
     char buffer;
     int result = recv(sockfd, &buffer, 1, MSG_PEEK | MSG_DONTWAIT);
@@ -41,89 +87,10 @@ static size_t socket_read(int socket, void *data, size_t size)
 	return read(socket, data, size);
 }
 
-void send_response(int client_socket, const char *header, const char *body) {
+void send_response(int client_socket, char *header, char *body) {
     socket_write(client_socket, header, strlen(header));
     socket_write(client_socket, body, strlen(body));
 }
-
-void send_image_stream(int client_socket) {
-    struct dirent *entry;
-    DIR *dp = opendir("pics");
-    if (dp == NULL) {
-        perror("opendir");
-        return;
-    }
-
-    char header[1024];
-    sprintf(header, "HTTP/1.1 200 OK\r\n");
-    sprintf(header + strlen(header), "Content-Type: multipart/x-mixed-replace; boundary=%s\r\n", BOUNDARY);
-    sprintf(header + strlen(header), "\r\n");
-    socket_write(client_socket, header, strlen(header));
-
-    while (1) {
-        rewinddir(dp);
-        while ((entry = readdir(dp)) != NULL) {
-            if (strstr(entry->d_name, ".jpeg") != NULL) {
-                char image_path[1024];
-                sprintf(image_path, "%s/%s", "pics", entry->d_name);
-
-                FILE *file = fopen(image_path, "rb");
-                if (file == NULL) {
-                    perror("fopen");
-                    continue;
-                }
-
-                fseek(file, 0, SEEK_END);
-                long image_size = ftell(file);
-                fseek(file, 0, SEEK_SET);
-
-                char *image_data = malloc(image_size);
-                fread(image_data, 1, image_size, file);
-                fclose(file);
-
-                sprintf(header, "--%s\r\n", BOUNDARY);
-                sprintf(header + strlen(header), "Content-Type: image/jpeg\r\n");
-                sprintf(header + strlen(header), "Content-Length: %ld\r\n", image_size);
-                sprintf(header + strlen(header), "\r\n");
-                socket_write(client_socket, header, strlen(header));
-                socket_write(client_socket, image_data, image_size);
-                socket_write(client_socket, "\r\n", 2);
-
-                free(image_data);
-
-                usleep(1000*1000);
-            }
-        }
-    }
-
-    closedir(dp);
-}
-
-typedef struct {
-	int socket;
-	int thread;
-	uint8_t is_inited;
-	uint8_t is_running;
-	uint8_t try_exit;
-	pthread_mutex_t lock;
-} client_info_t;
-
-typedef struct {
-	int socket_fd;
-	struct sockaddr_in address;
-	int addrlen;
-
-	pthread_mutex_t lock;
-	int thread;
-	uint8_t thread_is_started;
-	uint8_t try_exit_thread;
-
-	int client_cnt;
-	int client_max;
-	client_info_t *client;
-} priv_t;
-
-priv_t priv;
 
 static int find_unused_idx(client_info_t *client, int client_max)
 {
@@ -147,69 +114,96 @@ static int find_used_idx(client_info_t *client, int client_max)
 	return -1;
 }
 
+static int notify_client_update_buffer()
+{
+	for (int i = 0; i < priv.client_max; i ++) {
+		client_info_t *c = (client_info_t *)&priv.client[i];
+		if (c->is_inited) {
+			pthread_mutex_lock(&c->lock);
+			c->try_update_buffer = 1;
+			pthread_mutex_unlock(&c->lock);
+		}
+	}
+
+	return 0;
+}
+
+static int get_global_buffer_not_safe(void **buffer, size_t *size)
+{
+	buffer_info_t *info = (buffer_info_t *)&priv.buffer[priv.new_buffer_idx];
+	if (info->valid) {
+		if (!info->p) return -1;
+
+		if (buffer) *buffer = info->p;
+		if (size) *size = info->size;
+		return 0;
+	}
+
+	return -1;
+}
+
 static void on_stream(client_info_t *client) {
 	int client_socket = client->socket;
-    struct dirent *entry;
-    DIR *dp = opendir("pics");
-    if (dp == NULL) {
-        perror("opendir");
-        return;
-    }
-
     char header[1024];
     sprintf(header, "HTTP/1.1 200 OK\r\n");
     sprintf(header + strlen(header), "Content-Type: multipart/x-mixed-replace; boundary=%s\r\n", BOUNDARY);
     sprintf(header + strlen(header), "\r\n");
     socket_write(client_socket, header, strlen(header));
 
+	int update = 0;
     while (1) {
 		pthread_mutex_lock(&client->lock);
 		if (client->try_exit || !socket_is_connected(client->socket)) {
 			pthread_mutex_unlock(&client->lock);
 			break;
 		}
+
+		if (client->try_update_buffer) {
+			update = 1;
+			client->try_update_buffer = 0;
+		}
 		pthread_mutex_unlock(&client->lock);
 
-        rewinddir(dp);
-        while ((entry = readdir(dp)) != NULL) {
-            if (strstr(entry->d_name, ".jpeg") != NULL) {
-                char image_path[1024];
-                sprintf(image_path, "%s/%s", "pics", entry->d_name);
+		size_t image_size;
+		char *image_data;
+		if (update) {
+			update = 0;
 
-                FILE *file = fopen(image_path, "rb");
-                if (file == NULL) {
-                    perror("fopen");
-                    continue;
-                }
+			pthread_mutex_lock(&priv.lock);
+			void *buffer;
+			size_t buffer_size;
+			if (0 != get_global_buffer_not_safe(&buffer, &buffer_size)) {
+				printf("get global buffer failed!\r\n");
+				usleep(100*1000);
+				continue;
+			}
 
-                fseek(file, 0, SEEK_END);
-                long image_size = ftell(file);
-                fseek(file, 0, SEEK_SET);
+			image_size = buffer_size;
+			image_data = malloc(image_size);
+			if (!image_data) {
+				printf("malloc failed!\r\n");
+				usleep(100*1000);
+				continue;
+			}
+			memcpy(image_data, buffer, image_size);
+			pthread_mutex_unlock(&priv.lock);
 
-                char *image_data = malloc(image_size);
-                fread(image_data, 1, image_size, file);
-                fclose(file);
-
-                sprintf(header, "--%s\r\n", BOUNDARY);
-                sprintf(header + strlen(header), "Content-Type: image/jpeg\r\n");
-                sprintf(header + strlen(header), "Content-Length: %ld\r\n", image_size);
-                sprintf(header + strlen(header), "\r\n");
-                socket_write(client_socket, header, strlen(header));
-                socket_write(client_socket, image_data, image_size);
-                socket_write(client_socket, "\r\n", 2);
-
-                free(image_data);
-
-                usleep(1000*1000);
-            }
-        }
+			sprintf(header, "--%s\r\n", BOUNDARY);
+			sprintf(header + strlen(header), "Content-Type: image/jpeg\r\n");
+			sprintf(header + strlen(header), "Content-Length: %ld\r\n", image_size);
+			sprintf(header + strlen(header), "\r\n");
+			socket_write(client_socket, header, strlen(header));
+			socket_write(client_socket, image_data, image_size);
+			socket_write(client_socket, "\r\n", 2);
+			free(image_data);
+		} else {
+			usleep(10 * 1000);
+		}
     }
-
-    closedir(dp);
 }
 
 int http_jpeg_server_create(char *host, int port, int client_num) {
-    int server_fd, client_socket;
+    int server_fd;
     struct sockaddr_in address;
     int opt = 1;
     int addrlen = sizeof(address);
@@ -261,14 +255,19 @@ int http_jpeg_server_create(char *host, int port, int client_num) {
 		return -1;
 	}
 	memset(priv.client, 0, priv.client_max * sizeof(client_info_t));
+	memset(priv.buffer, 0, sizeof(priv.buffer));
 	priv.client_cnt = 0;
+	priv.index_str = (char *)default_index_str;
 	return 0;
 }
 
-static void client_thread_handle(void *param)
+static void *client_thread_handle(void *param)
 {
 	int res;
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wpointer-to-int-cast"
 	int index = (int)param;
+#pragma GCC diagnostic pop
 	pthread_mutex_lock(&priv.lock);
 	client_info_t *client = (client_info_t *)&priv.client[index];
 	pthread_mutex_t *lock = &client->lock;
@@ -279,7 +278,6 @@ static void client_thread_handle(void *param)
 	client->is_running = 1;
 	pthread_mutex_unlock(lock);
 
-	int max_sd;
 	fd_set readfds;
 	while (1) {
 		pthread_mutex_lock(lock);
@@ -291,7 +289,6 @@ static void client_thread_handle(void *param)
 
 		FD_ZERO(&readfds);
 		FD_SET(client_socket, &readfds);
-		max_sd = client_socket;
 
         char buffer[1024] = {0};
 
@@ -319,9 +316,9 @@ static void client_thread_handle(void *param)
         if (strstr(buffer, "GET /stream") != NULL) {
 			on_stream(client);
         } else {
-            const char *response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
-                                   "<html><body><h1>JPG Stream</h1><img src='/stream'></body></html>";
-            send_response(client_socket, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n", response);
+            char *response = priv.index_str;
+			socket_write(client_socket, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n", strlen("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"));
+    		socket_write(client_socket, response, strlen(response));
         }
 	}
 
@@ -339,11 +336,11 @@ static void client_thread_handle(void *param)
 	pthread_exit(NULL);
 }
 
-static void thread_handle(void *param)
+static void *thread_handle(void *param)
 {
 	int res;
 	priv_t *priv = (priv_t *)param;
-	int server_fd, client_socket;
+	int server_fd;
 
 	pthread_mutex_lock(&priv->lock);
 	server_fd = priv->socket_fd;
@@ -377,13 +374,14 @@ static void thread_handle(void *param)
 			printf("create client lock failed!\r\n");
 			continue;
 		}
-
-		if (0 != (res = pthread_create(&client->thread, NULL, client_thread_handle, idx))) {
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
+		if (0 != (res = pthread_create((pthread_t *)&client->thread, NULL, client_thread_handle, (void *)idx))) {
 			fprintf(stderr, "create client thread error:%s\n", strerror(res));
 			pthread_mutex_destroy(&client->lock);
 			continue;
 		}
-
+#pragma GCC diagnostic pop
 		// if (0 != (res = pthread_detach(&client->thread))) {
 		// 	fprintf(stderr, "client thread detach error:%s\n", strerror(res));
 		// 	pthread_mutex_destroy(&client->lock);
@@ -393,6 +391,26 @@ static void thread_handle(void *param)
 		priv->client_cnt ++;printf("idx:%d curr:%d max:%d\r\n", idx, priv->client_cnt, priv->client_max);
 		pthread_mutex_unlock(&priv->lock);
 	}
+
+	return NULL;
+}
+
+int http_jpeg_server_set_index_str(char *index)
+{
+	if (priv.index_str != default_index_str) {
+		if (priv.index_str) {
+			free(priv.index_str);
+			priv.index_str = NULL;
+		}
+	}
+
+	priv.index_str = malloc(strlen(index) + 1);
+	if (!priv.index_str) {
+		printf("malloc failed!\r\n");
+		return -1;
+	}
+	strcpy(priv.index_str, index);
+	return 0;
 }
 
 int http_jpeg_server_start() {
@@ -417,7 +435,6 @@ int http_jpeg_server_start() {
 }
 
 int http_jpeg_server_stop() {
-
 	pthread_mutex_lock(&priv.lock);
 	if (!priv.thread_is_started) {
 		return 0;
@@ -458,64 +475,114 @@ int http_jpeg_server_destory() {
 	return 0;
 }
 
+int http_jpeg_server_send(void *data, size_t size)
+{
+	pthread_mutex_lock(&priv.lock);
+	int next_buffer_idx = !priv.new_buffer_idx;
+	if (priv.buffer[next_buffer_idx].p) {
+		free(priv.buffer[next_buffer_idx].p);
+		priv.buffer[next_buffer_idx].p = NULL;
+	}
+	priv.buffer[next_buffer_idx].p = malloc(size);
+	if (priv.buffer[next_buffer_idx].p == NULL) {
+		printf("create new buffer failed!\r\n");
+		return -1;
+	}
+	memcpy(priv.buffer[next_buffer_idx].p, data, size);
+	priv.buffer[next_buffer_idx].size = size;
+	priv.buffer[next_buffer_idx].valid = 1;
+	priv.new_buffer_idx = next_buffer_idx;
+	pthread_mutex_unlock(&priv.lock);
+
+	notify_client_update_buffer();
+
+	return 0;
+}
+
+static void loop(void) {
+    struct dirent *entry;
+    DIR *dp = opendir("pics");
+    if (dp == NULL) {
+        perror("opendir");
+        return;
+    }
+
+	while ((entry = readdir(dp)) != NULL) {
+		if (strstr(entry->d_name, ".jpeg") != NULL) {
+			char image_path[1024];
+			sprintf(image_path, "%s/%s", "pics", entry->d_name);
+
+			FILE *file = fopen(image_path, "rb");
+			if (file == NULL) {
+				perror("fopen");
+				continue;
+			}
+
+			fseek(file, 0, SEEK_END);
+			long image_size = ftell(file);
+			fseek(file, 0, SEEK_SET);
+
+			char *image_data = malloc(image_size);
+			int len = fread(image_data, 1, image_size, file);
+			fclose(file);
+
+			printf("send data:%p size:%ld(%d)\r\n", image_data, image_size, len);
+			http_jpeg_server_send(image_data, image_size);
+			free(image_data);
+
+			usleep(100*1000);
+		}
+	}
+
+    closedir(dp);
+}
+
+char *user_idx =
+"<!DOCTYPE html>\n"
+"<html>\n"
+"<head>\n"
+"    <title>JPG Stream</title>\n"
+"    <style>\n"
+"        body {\n"
+"            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;\n"
+"            margin: 0;\n"
+"            height: 100vh;\n"
+"            display: flex;\n"
+"            flex-direction: column;\n"
+"            align-items: center;\n"
+"            justify-content: center;\n"
+"            text-align: center;\n"
+"            background: linear-gradient(to right, #6a11cb, #2575fc);\n"
+"            color: #ffffff;\n"
+"        }\n"
+"        h1 {\n"
+"            font-size: 2em;\n"
+"        }\n"
+"        img {\n"
+"            max-width: 90%;\n"
+"            border: 5px solid #ffffff;\n"
+"            box-shadow: 0 8px 16px 0 rgba(0, 0, 0, 0.2);\n"
+"            transition: transform 0.3s ease-in-out;\n"
+"        }\n"
+"        img:hover {\n"
+"            transform: scale(1.05);\n"
+"        }\n"
+"    </style>\n"
+"</head>\n"
+"<body>\n"
+"    <h1>JPG Stream</h1>\n"
+"    <img src=\"/stream\" alt=\"Stream\">\n"
+"</body>\n"
+"</html>\n";
+
 int main() {
-#if 0
-    int server_fd, client_socket;
-    struct sockaddr_in address;
-    int opt = 1;
-    int addrlen = sizeof(address);
-
-    if ((server_fd = socket(AF_INET, SOCK_STREAM, 0)) == 0) {
-        perror("socket failed");
-        exit(EXIT_FAILURE);
-    }
-
-    if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR | SO_REUSEPORT, &opt, sizeof(opt))) {
-        perror("setsockopt");
-        exit(EXIT_FAILURE);
-    }
-
-    address.sin_family = AF_INET;
-    address.sin_addr.s_addr = INADDR_ANY;
-    address.sin_port = htons(PORT);
-
-    if (bind(server_fd, (struct sockaddr *)&address, sizeof(address)) < 0) {
-        perror("bind failed");
-        exit(EXIT_FAILURE);
-    }
-
-    if (listen(server_fd, 3) < 0) {
-        perror("listen");
-        exit(EXIT_FAILURE);
-    }
-
-    while (1) {
-        if ((client_socket = accept(server_fd, (struct sockaddr *)&address, (socklen_t*)&addrlen)) < 0) {
-            perror("accept");
-            exit(EXIT_FAILURE);
-        }
-
-        char buffer[1024] = {0};
-        socket_read(client_socket, buffer, 1024);
-
-        if (strstr(buffer, "GET /stream") != NULL) {
-            send_image_stream(client_socket);
-        } else {
-            const char *response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"
-                                   "<html><body><h1>JPG Stream</h1><img src='/stream'></body></html>";
-            send_response(client_socket, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n", response);
-        }
-
-        close(client_socket);
-    }
-
-    return 0;
-#else
 	int res = 0;
 	if (0 != (res = http_jpeg_server_create("127.0.0.1", 8000, 10))) {
 		printf("http_jpeg_server_create failed! res:%d\r\n",  res);
 		return -1;
 	}
+
+	http_jpeg_server_set_index_str(user_idx);
 
 	if (0 != (res = http_jpeg_server_start())) {
 		printf("http_jpeg_server_start failed! res:%d\r\n",  res);
@@ -523,9 +590,7 @@ int main() {
 	}
 
 	while (1) {
-		printf("sleep 1\r\n");
-		sleep(1);
-		printf("curr:%d max:%d\r\n", priv.client_cnt, priv.client_max);
+		loop();
 	}
 
 	if (0 != (res = http_jpeg_server_stop())) {
@@ -539,5 +604,4 @@ int main() {
 	}
 
 	return 0;
-#endif
 }
