@@ -2,7 +2,8 @@
 
 RELEASE=0
 
-PLATFORM=/home/owen/MaixCDK/dl/extracted/toolchains/maixcam/host-tools/gcc/riscv64-linux-musl-x86_64/bin/riscv64-unknown-linux-musl
+# export PATH=${PATH}:/home/sipeed/toolchain/host-tools/gcc/riscv64-linux-musl-x86_64/bin
+# PLATFORM=riscv64-unknown-linux-musl
 
 CURR_DIR=$(cd "$(dirname "$0")";pwd)
 INSTALL=${CURR_DIR}
@@ -48,12 +49,12 @@ if [ ${RELEASE} -eq 1 ]; then
     find ${CURR_DIR}/avcodec -type f -path "*/release.${PLATFORM}/*.a" -exec cp {} ${INSTALL_LIB} \;
     find ${CURR_DIR}/avcodec -type f -path "*/release.${PLATFORM}/*.so" -exec cp {} ${INSTALL_LIB} \;
 else
-    find ${CURR_DIR}/media-server -type f -path "*/debug.${PLATFORM}/*.a" -exec cp {} ${INSTALL_LIB} \;
-    find ${CURR_DIR}/media-server -type f -path "*/debug.${PLATFORM}/*.so" -exec cp {} ${INSTALL_LIB} \;
-    find ${CURR_DIR}/sdk -type f -path "*/debug.${PLATFORM}/*.a" -exec cp {} ${INSTALL_LIB} \;
-    find ${CURR_DIR}/sdk -type f -path "*/debug.${PLATFORM}/*.so" -exec cp {} ${INSTALL_LIB} \;
-    find ${CURR_DIR}/avcodec -type f -path "*/debug.${PLATFORM}/*.a" -exec cp {} ${INSTALL_LIB} \;
-    find ${CURR_DIR}/avcodec -type f -path "*/debug.${PLATFORM}/*.so" -exec cp {} ${INSTALL_LIB} \;
+    find ${CURR_DIR}/media-server -type f -path "*/debug.*/*.a" -exec cp {} ${INSTALL_LIB} \;
+    find ${CURR_DIR}/media-server -type f -path "*/debug.*/*.so" -exec cp {} ${INSTALL_LIB} \;
+    find ${CURR_DIR}/sdk -type f -path "*/debug.*/*.a" -exec cp {} ${INSTALL_LIB} \;
+    find ${CURR_DIR}/sdk -type f -path "*/debug.*/*.so" -exec cp {} ${INSTALL_LIB} \;
+    find ${CURR_DIR}/avcodec -type f -path "*/debug.*/*.a" -exec cp {} ${INSTALL_LIB} \;
+    find ${CURR_DIR}/avcodec -type f -path "*/debug.*/*.so" -exec cp {} ${INSTALL_LIB} \;
 fi
 
 if [ ! -d ${INSTALL_INC} ]; then
@@ -118,6 +119,7 @@ cp -r ${CURR_DIR}/media-server/libsip/include ${INSTALL_INC}/media-server/libsip
 cp -r ${CURR_DIR}/sdk/include ${INSTALL_INC}/sdk
 cp -r ${CURR_DIR}/sdk/libaio/include ${INSTALL_INC}/sdk/libaio
 cp -r ${CURR_DIR}/sdk/libhttp/include ${INSTALL_INC}/sdk/libhttp
+cp -r ${CURR_DIR}/sdk/libhttp/include/*.h ${INSTALL_INC}/sdk/libhttp/include
 cp -r ${CURR_DIR}/sdk/libice/include ${INSTALL_INC}/sdk/libice
 cp -r ${CURR_DIR}/avcodec/avbsf/include ${INSTALL_INC}/avcodec/avbsf
 cp -r ${CURR_DIR}/avcodec/avcodec/include ${INSTALL_INC}/avcodec/avcodec
