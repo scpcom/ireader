@@ -8,7 +8,7 @@
 #include <assert.h>
 
 
-static uint8_t s_buffer[2 * 1024 * 1024];
+static uint8_t s_buffer[512 * 1024];
 static uint8_t s_extra_data[64 * 1024];
 
 struct mov_h265_test_t
@@ -131,7 +131,7 @@ static int64_t memory_tell(void* param)
 	return ctx->buf_seek;
 }
 
-static int buffer_init(struct mov_h265_test_t *ctx, int max_size)
+static int mp4_buffer_init(struct mov_h265_test_t *ctx, int max_size)
 {
     ctx->buf = malloc(max_size);
     if (ctx->buf == NULL) return -1;
@@ -141,7 +141,7 @@ static int buffer_init(struct mov_h265_test_t *ctx, int max_size)
     return 0;
 }
 
-static int buffer_deinit(struct mov_h265_test_t *ctx)
+static int mp4_buffer_deinit(struct mov_h265_test_t *ctx)
 {
     ctx->buf_seek = 0;
     ctx->buf_max_size = 0;
@@ -163,6 +163,16 @@ static struct mov_buffer_t *buffer_ops(void)
     return &memory_ops;
 }
 
+static int mp4_buffer_seek(struct mov_h265_test_t *ctx, int offset)
+{
+    if (offset >= 0 && offset < ctx->buf_max_size) {
+        ctx->buf_seek = offset;
+    } else {
+        ctx->buf_seek = ctx->buf_max_size;
+    }
+    return 0;
+}
+
 static const uint8_t* h264_startcode(const uint8_t *data, size_t bytes)
 {
 	size_t i;
@@ -175,9 +185,10 @@ static const uint8_t* h264_startcode(const uint8_t *data, size_t bytes)
 	return NULL;
 }
 
-int mp4_prepare_data(void *param, void *data, int size)
+int mp4_prepare_iterate_data(void *param, void *data, int size)
 {
     struct mov_h265_test_t *ctx = (struct mov_h265_test_t *)param;
+    ctx->ptr = data;
     ctx->data = data;
     ctx->data_size = size;
     ctx->end = ctx->data + ctx->data_size;
@@ -238,12 +249,18 @@ static void mp4_write_h265(void* param, uint8_t* nalu, size_t bytes)
         ctx->vcl = 0;
     }
 
-	if (nalutype <= 31)
-		++ctx->vcl;
+	if (nalutype <= 31) {
+        ++ctx->vcl;
+    }
 }
 
 void mov_writer_h265(const char* h265, int width, int height, const char* mp4)
 {
+	long bytes = 0;
+	uint8_t* ptr = (uint8_t *)file_read(h265, &bytes);
+	if (NULL == ptr) return;
+	FILE* fp = fopen(mp4, "wb+");
+
 	struct mov_h265_test_t ctx;
 	memset(&ctx, 0, sizeof(ctx));
 	ctx.track = -1;
@@ -251,28 +268,60 @@ void mov_writer_h265(const char* h265, int width, int height, const char* mp4)
 	ctx.height = height;
 	ctx.bytes = 0;
 
-	long bytes = 0;
-	uint8_t* ptr = (uint8_t *)file_read(h265, &bytes);
-	if (NULL == ptr) return;
-	ctx.ptr = ptr;
+#if 1
+static int cnt = 0;
 
-	FILE* fp = fopen(mp4, "wb+");
-
-    buffer_init(&ctx, 5 * 1024 * 1024);
-
+    mp4_buffer_init(&ctx, 5 * 1024 * 1024);
 	ctx.mov = mp4_writer_create(0, buffer_ops(), &ctx, MOV_FLAG_FASTSTART | MOV_FLAG_SEGMENT);
-    mp4_prepare_data(&ctx, ptr, bytes);
+printf("buf_seek:%d\r\n", ctx.buf_seek);
+    fwrite(ctx.buf, 1, ctx.buf_seek, fp);cnt += ctx.buf_seek;printf("cnt=%d\r\n", cnt);
+    mp4_buffer_seek(&ctx, 0);
+
+    mp4_prepare_iterate_data(&ctx, ptr, bytes);
 
     void *frame;
     int frame_size;
     while (0 == mp4_h265_iterate(&ctx, &frame, &frame_size)) {
         mp4_write_h265(&ctx, frame, (int)frame_size);
+printf("frame_size:%d buf_seek:%d\r\n", frame_size, ctx.buf_seek);
+        fwrite(ctx.buf, 1, ctx.buf_seek, fp);cnt += ctx.buf_seek;printf("cnt=%d\r\n", cnt);
+        mp4_buffer_seek(&ctx, 0);
     }
+printf("buf_seek:%d\r\n", ctx.buf_seek);printf("===============[%s][%d]\r\n", __func__, __LINE__);
+    mp4_buffer_seek(&ctx, 1672498);
+	mp4_writer_destroy(ctx.mov);printf("buf_seek:%d\r\n", ctx.buf_seek - 1672498);
+    fwrite(ctx.buf, 1, ctx.buf_seek - 1672498, fp);cnt += ctx.buf_seek;printf("cnt=%d\r\n", cnt);
 
-	mp4_writer_destroy(ctx.mov);
-    fwrite(ctx.buf, ctx.buf_seek, 1, fp);
 	fclose(fp);
 	free(ptr);
+    mp4_buffer_deinit(&ctx);
+#else
+static int cnt = 0;
+    mp4_buffer_init(&ctx, 5 * 1024 * 1024);
+	ctx.mov = mp4_writer_create(0, buffer_ops(), &ctx, MOV_FLAG_FASTSTART | MOV_FLAG_SEGMENT);
+printf("buf_seek:%d\r\n", ctx.buf_seek);
+    // fwrite(ctx.buf, 1, ctx.buf_seek, fp);cnt += ctx.buf_seek;printf("cnt=%d\r\n", cnt);
+    // mp4_buffer_reset(&ctx);
+
+    mp4_prepare_iterate_data(&ctx, ptr, bytes);
+
+    void *frame;
+    int frame_size;
+    while (0 == mp4_h265_iterate(&ctx, &frame, &frame_size)) {
+        mp4_write_h265(&ctx, frame, (int)frame_size);
+printf("frame_size:%d buf_seek:%d\r\n", frame_size, ctx.buf_seek);
+        // fwrite(ctx.buf, 1, ctx.buf_seek, fp);cnt += ctx.buf_seek;printf("cnt=%d\r\n", cnt);
+        // mp4_buffer_reset(&ctx);
+    }cnt += ctx.buf_seek;printf("cnt=%d\r\n", cnt);
+printf("buf_seek:%d\r\n", ctx.buf_seek);printf("===============[%s][%d]\r\n", __func__, __LINE__);
+	mp4_writer_destroy(ctx.mov);printf("buf_seek:%d\r\n", ctx.buf_seek);
+    fwrite(ctx.buf, 1, ctx.buf_seek, fp);cnt += ctx.buf_seek;printf("cnt=%d\r\n", cnt);
+	fclose(fp);
+	free(ptr);
+    mp4_buffer_deinit(&ctx);
+#endif
+
+
 }
 
 int main()
