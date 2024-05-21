@@ -9,7 +9,9 @@
 #include <linux/socket.h>
 #include <pthread.h>
 #include <sys/select.h>
+#include <sys/socket.h>
 #include <errno.h>
+#include <netdb.h>
 
 #define BOUNDARY "frame"
 
@@ -24,6 +26,7 @@ static const char *default_index_str =
 typedef struct {
 	int socket;
 	int thread;
+	int idx;
 	uint8_t is_inited;
 	uint8_t is_running;
 	uint8_t try_update_buffer;
@@ -58,6 +61,39 @@ typedef struct {
 } priv_t;
 
 priv_t priv;
+
+
+static char *get_ip_str(char *hostname) {
+    struct addrinfo hints, *res, *p;
+    int status;
+    char *ipstr = (char *)malloc(INET6_ADDRSTRLEN);
+	if (!ipstr) return NULL;
+
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+
+    if ((status = getaddrinfo(hostname, NULL, &hints, &res)) != 0) {
+        fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(status));
+        return NULL;
+    }
+
+    for (p = res; p != NULL; p = p->ai_next) {
+        void *addr;
+        if (p->ai_family == AF_INET) {
+            struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
+            addr = &(ipv4->sin_addr);
+        } else { // IPv6
+            struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)p->ai_addr;
+            addr = &(ipv6->sin6_addr);
+        }
+        inet_ntop(p->ai_family, addr, ipstr, INET6_ADDRSTRLEN);
+    }
+
+    freeaddrinfo(res);
+
+	return ipstr;
+}
 
 static int socket_is_connected(int sockfd) {
     char buffer;
@@ -97,17 +133,6 @@ static int find_unused_idx(client_info_t *client, int client_max)
 	for (int i = 0; i < client_max; i ++) {
 		client_info_t *c = (client_info_t *)&client[i];
 		if (!c->is_inited) {
-			return i;
-		}
-	}
-	return -1;
-}
-
-static int find_used_idx(client_info_t *client, int client_max)
-{
-	for (int i = 0; i < client_max; i ++) {
-		client_info_t *c = (client_info_t *)&client[i];
-		if (c->is_inited) {
 			return i;
 		}
 	}
@@ -179,7 +204,7 @@ static void on_stream(client_info_t *client) {
 			}
 
 			image_size = buffer_size;
-			image_data = malloc(image_size);
+			image_data = (char *)malloc(image_size);
 			if (!image_data) {
 				printf("malloc failed!\r\n");
 				usleep(100*1000);
@@ -194,7 +219,7 @@ static void on_stream(client_info_t *client) {
 			sprintf(header + strlen(header), "\r\n");
 			socket_write(client_socket, header, strlen(header));
 			socket_write(client_socket, image_data, image_size);
-			socket_write(client_socket, "\r\n", 2);
+			socket_write(client_socket, (char *)"\r\n", 2);
 			free(image_data);
 		} else {
 			usleep(10 * 1000);
@@ -223,7 +248,14 @@ int http_jpeg_server_create(char *host, int port, int client_num) {
 	if (host == 0 || strlen(host) == 0) {
 		address.sin_addr.s_addr = INADDR_ANY;
 	} else {
-		address.sin_addr.s_addr = inet_addr(host);
+		char *ip = (char *)get_ip_str(host);
+		if (!ip) {
+			printf("can not parse ip:%s\r\n", host);
+			close(server_fd);
+			return -1;
+		}
+		address.sin_addr.s_addr = inet_addr(ip);
+		free(ip);
 	}
     address.sin_port = htons(port);
 
@@ -264,12 +296,8 @@ int http_jpeg_server_create(char *host, int port, int client_num) {
 static void *client_thread_handle(void *param)
 {
 	int res;
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpointer-to-int-cast"
-	int index = (int)param;
-#pragma GCC diagnostic pop
 	pthread_mutex_lock(&priv.lock);
-	client_info_t *client = (client_info_t *)&priv.client[index];
+	client_info_t *client = (client_info_t *)param;
 	pthread_mutex_t *lock = &client->lock;
 	pthread_mutex_unlock(&priv.lock);
 
@@ -317,7 +345,7 @@ static void *client_thread_handle(void *param)
 			on_stream(client);
         } else {
             char *response = priv.index_str;
-			socket_write(client_socket, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n", strlen("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"));
+			socket_write(client_socket, (char *)"HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n", strlen("HTTP/1.1 200 OK\r\nContent-Type: text/html\r\n\r\n"));
     		socket_write(client_socket, response, strlen(response));
         }
 	}
@@ -370,32 +398,32 @@ static void *thread_handle(void *param)
 		client_info_t *client = (client_info_t *)&priv->client[idx];
 		client->socket = client_socket;
 		client->try_exit = 0;
+		client->idx = idx;
 		if (0 != pthread_mutex_init(&client->lock, NULL)) {
 			printf("create client lock failed!\r\n");
 			continue;
 		}
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wint-to-pointer-cast"
-		if (0 != (res = pthread_create((pthread_t *)&client->thread, NULL, client_thread_handle, (void *)idx))) {
+
+		if (0 != (res = pthread_create((pthread_t *)&client->thread, NULL, client_thread_handle, client))) {
 			fprintf(stderr, "create client thread error:%s\n", strerror(res));
 			pthread_mutex_destroy(&client->lock);
 			continue;
 		}
-#pragma GCC diagnostic pop
+
 		// if (0 != (res = pthread_detach(&client->thread))) {
 		// 	fprintf(stderr, "client thread detach error:%s\n", strerror(res));
 		// 	pthread_mutex_destroy(&client->lock);
 		// 	continue;
 		// }
 		client->is_inited = 1;
-		priv->client_cnt ++;printf("idx:%d curr:%d max:%d\r\n", idx, priv->client_cnt, priv->client_max);
+		priv->client_cnt ++;
 		pthread_mutex_unlock(&priv->lock);
 	}
 
 	return NULL;
 }
 
-int http_jpeg_server_set_index_str(char *index)
+static int http_jpeg_server_set_index_str(char *index)
 {
 	if (priv.index_str != default_index_str) {
 		if (priv.index_str) {
@@ -404,7 +432,7 @@ int http_jpeg_server_set_index_str(char *index)
 		}
 	}
 
-	priv.index_str = malloc(strlen(index) + 1);
+	priv.index_str = (char *)malloc(strlen(index) + 1);
 	if (!priv.index_str) {
 		printf("malloc failed!\r\n");
 		return -1;
@@ -413,7 +441,7 @@ int http_jpeg_server_set_index_str(char *index)
 	return 0;
 }
 
-int http_jpeg_server_start() {
+static int http_jpeg_server_start() {
 	pthread_t thread;
 
 	pthread_mutex_lock(&priv.lock);
@@ -434,7 +462,7 @@ int http_jpeg_server_start() {
 	return 0;
 }
 
-int http_jpeg_server_stop() {
+static int http_jpeg_server_stop() {
 	pthread_mutex_lock(&priv.lock);
 	if (!priv.thread_is_started) {
 		return 0;
@@ -442,22 +470,22 @@ int http_jpeg_server_stop() {
 	priv.try_exit_thread = 1;
 	pthread_mutex_unlock(&priv.lock);
 
-	for (int i = find_used_idx(priv.client, priv.client_max); i >= 0;) {
-		client_info_t *client = (client_info_t *)&priv.client[i];
-		pthread_mutex_lock(&client->lock);
-		if (client->is_inited) {
-			client->try_exit = 1;
+	for (int i = 0; i < priv.client_max; i ++) {
+		client_info_t *c = (client_info_t *)&priv.client[i];
+		if (c->is_inited) {
+			pthread_mutex_lock(&c->lock);
+			c->try_exit = 1;
+			pthread_mutex_unlock(&c->lock);
 		}
-		pthread_mutex_unlock(&client->lock);
 	}
 
-	pthread_join(priv.thread, NULL);
+	// pthread_join(priv.thread, NULL);
 	priv.thread_is_started = 0;
 	return 0;
 }
 
 
-int http_jpeg_server_destory() {
+static int http_jpeg_server_destory() {
 	http_jpeg_server_stop();
 
 	if (priv.client) {
@@ -475,7 +503,7 @@ int http_jpeg_server_destory() {
 	return 0;
 }
 
-int http_jpeg_server_send(void *data, size_t size)
+static int http_jpeg_server_send(void *data, size_t size)
 {
 	pthread_mutex_lock(&priv.lock);
 	int next_buffer_idx = !priv.new_buffer_idx;
@@ -522,7 +550,7 @@ static void loop(void) {
 			long image_size = ftell(file);
 			fseek(file, 0, SEEK_SET);
 
-			char *image_data = malloc(image_size);
+			char *image_data = (char *)malloc(image_size);
 			int len = fread(image_data, 1, image_size, file);
 			fclose(file);
 
@@ -577,7 +605,7 @@ char *user_idx =
 
 int main() {
 	int res = 0;
-	if (0 != (res = http_jpeg_server_create("127.0.0.1", 8000, 10))) {
+	if (0 != (res = http_jpeg_server_create("localhost", 8000, 10))) {
 		printf("http_jpeg_server_create failed! res:%d\r\n",  res);
 		return -1;
 	}
@@ -605,3 +633,61 @@ int main() {
 
 	return 0;
 }
+
+
+
+// int main(int argc, char *argv[]) {
+//     if (argc != 2) {
+//         fprintf(stderr, "Usage: %s <hostname>\n", argv[0]);
+//         exit(EXIT_FAILURE);
+//     }
+
+//     char *hostname = argv[1];
+
+
+// 	char *ip = get_ip_str(hostname);
+// 	printf("ip:%s\r\n", ip);
+// 	free(ip);
+//     struct addrinfo hints, *res, *p;
+//     int status;
+//     char ipstr[INET6_ADDRSTRLEN];
+
+//     // 初始化hints结构体
+//     memset(&hints, 0, sizeof hints);
+//     hints.ai_family = AF_UNSPEC; // 使用IPv4或IPv6
+//     hints.ai_socktype = SOCK_STREAM; // 使用TCP协议
+
+//     // 获取地址信息
+//     if ((status = getaddrinfo(hostname, NULL, &hints, &res)) != 0) {
+//         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(status));
+//         exit(EXIT_FAILURE);
+//     }
+
+//     printf("IP addresses for %s:\n\n", hostname);
+
+//     // 遍历结果，输出IP地址
+//     for (p = res; p != NULL; p = p->ai_next) {
+//         void *addr;
+//         char *ipver;
+// printf("==\r\n");
+//         // 获取IP地址
+//         if (p->ai_family == AF_INET) { // IPv4
+//             struct sockaddr_in *ipv4 = (struct sockaddr_in *)p->ai_addr;
+//             addr = &(ipv4->sin_addr);
+//             ipver = "IPv4";
+//         } else { // IPv6
+//             struct sockaddr_in6 *ipv6 = (struct sockaddr_in6 *)p->ai_addr;
+//             addr = &(ipv6->sin6_addr);
+//             ipver = "IPv6";
+//         }
+
+//         // 将IP地址转换为字符串格式
+//         inet_ntop(p->ai_family, addr, ipstr, sizeof ipstr);
+//         printf("%s: %s\n", ipver, ipstr);
+//     }
+
+//     // 释放内存
+//     freeaddrinfo(res);
+
+//     return 0;
+// }
