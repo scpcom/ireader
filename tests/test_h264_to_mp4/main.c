@@ -297,7 +297,7 @@ void mov_writer_h265(const char* h265, int width, int height, const char* mp4)
 	ctx.height = height;
 	ctx.bytes = 0;
 
-#if 1
+#if 0
 static int cnt = 0;
 
     mp4_buffer_init(&ctx, 5 * 1024 * 1024);
@@ -322,7 +322,7 @@ printf("frame_size:%d buf_seek:%d frame_type:%d(%#x\r\n", frame_size, ctx.buf_se
         mp4_buffer_seek(&ctx, 0);
     }
 printf("buf_seek:%d\r\n", ctx.buf_seek);printf("===============[%s][%d]\r\n", __func__, __LINE__);
-    mp4_buffer_seek(&ctx, 0);
+    mp4_buffer_seek(&ctx, 1672498);
 	mp4_writer_destroy(ctx.mov);printf("buf_seek:%d\r\n", ctx.buf_seek - 1672498);
     fwrite(ctx.buf, 1, ctx.buf_seek - 1672498, fp);cnt += ctx.buf_seek;printf("cnt=%d\r\n", cnt);
 
@@ -358,7 +358,11 @@ printf("buf_seek:%d\r\n", ctx.buf_seek);printf("===============[%s][%d]\r\n", __
 
 }
 
-int main()
+int main(int argc, char **argv)
 {
-    mov_writer_h265("output.h265", 640, 480, "output_h265_2.mp4");
+    if (argc < 5) {
+        printf("try: ./test output.h264 640 480 output_h264.mp4");
+    }
+
+    mov_writer_h265(argv[1], argv[2], argv[3], argv[4]);
 }
