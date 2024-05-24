@@ -11,7 +11,7 @@ static void avc2flv_test(const char* inputH264, const char* outputFLV)
 	size_t n = fread(buffer, 1, sizeof(buffer), fp);
     fclose(fp);
     
-    FILE *file = fopen("output2.flv", "wb");
+    FILE *file = fopen(outputFLV, "wb");
 
     assert(0 == maix_avc2flv_init(256 * 1024));
 
