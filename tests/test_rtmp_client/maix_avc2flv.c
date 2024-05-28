@@ -116,8 +116,10 @@ static void avc2flv(void* param, uint8_t* nalu, size_t bytes, uint32_t pts, uint
 #if 0
     uint8_t* ptr = nalu - 3;
     uint8_t nalutype = nalu[0] & 0x1f;
+    printf("=========bytes:%d nalutype:%d\r\n ", bytes, nalutype);
     if (ctx->vcl > 0 && h264_is_new_access_unit((uint8_t*)nalu, bytes))
     {
+        printf("!!!!!!==ctx->ptr:%p(size:%d) nalu:%p bytes:%d nalutype:%d\r\n ", ctx->ptr, ptr - ctx->ptr, nalu, bytes, nalutype);
         flv_muxer_avc(ctx->flv, ctx->ptr, ptr - ctx->ptr, pts, dts);
         ctx->ptr = ptr;
         ctx->vcl = 0;
