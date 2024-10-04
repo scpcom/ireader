@@ -1,9 +1,9 @@
 [submodule "ireader-media-server"]
 	path = media-server
-	url = git@github.com:lxowalle/ireader-media-server.git
+	url = git@github.com:scpcom/ireader-media-server.git
 [submodule "ireader-avcodec"]
 	path = avcodec
-	url = git@github.com:lxowalle/ireader-avcodec.git
+	url = git@github.com:scpcom/ireader-avcodec.git
 [submodule "ireader-sdk"]
 	path = sdk
-	url = git@github.com:lxowalle/ireader-sdk.git
+	url = git@github.com:scpcom/ireader-sdk.git
